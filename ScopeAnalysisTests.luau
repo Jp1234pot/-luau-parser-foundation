@@ -710,6 +710,8 @@ function ScopeAnalysisTests.runAll(): { [string]: boolean }
 		local blockId = rootScope.childrenIds[1]
 		local blockScope = res.scopes[blockId]
 
+print("diag:", #parsed.diagnostics, "stmts:", #parsed.ast.body.statements, "rootDecls:", #rootScope.declaredSymbolIds, "blockDecls:", #blockScope.declaredSymbolIds)
+
 		assertTrue(#rootScope.declaredSymbolIds == 1, "Expected 1 declaration in root scope")
 		assertTrue(#blockScope.declaredSymbolIds == 2, "Expected 2 declarations (including redeclaration) in inner Block scope")
 
