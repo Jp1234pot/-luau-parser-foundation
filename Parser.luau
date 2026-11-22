@@ -440,6 +440,8 @@ function Parser.parse(
 						endBlockDepth -= 1
 						if endBlockDepth == 0 then
 							pendingWhileHeader = false
+							advance()
+							continue
 						end
 					else
 						return cursor - startCursor
