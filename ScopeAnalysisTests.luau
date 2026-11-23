@@ -724,6 +724,11 @@ print("diag:", #parsed.diagnostics, "stmts:", #parsed.ast.body.statements, "root
 			sym1.id ~= sym2.id and sym2.id ~= sym3.id and sym1.id ~= sym3.id,
 			"Expected distinct symbol IDs for outer, inner, and redeclared inner symbols"
 		)
+
+print("Expected span: 22, 22")
+print("Actual start:", sym2.span.start.offset, sym2.span.start.line, sym2.span.start.column)
+print("Actual end:", sym2.span["end"].offset, sym2.span["end"].line, sym2.span["end"].column)
+
 		assertTrue(matchesScalarSpan(sym2.span, mkSpan(22, 22)), "Expected inner declaration span to match binding span (22..22)")
 		assertTrue(sym1.readCount == 0 and sym1.writeCount == 0, "Expected initial read/write counts to be 0")
 		assertTrue(ScopeAnalysis.resolveName(res, "x", res.rootScopeId) == sym1, "Expected root scope to resolve outer 'x'")
