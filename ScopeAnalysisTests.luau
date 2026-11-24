@@ -710,8 +710,6 @@ function ScopeAnalysisTests.runAll(): { [string]: boolean }
 		local blockId = rootScope.childrenIds[1]
 		local blockScope = res.scopes[blockId]
 
-print("diag:", #parsed.diagnostics, "stmts:", #parsed.ast.body.statements, "rootDecls:", #rootScope.declaredSymbolIds, "blockDecls:", #blockScope.declaredSymbolIds)
-
 		assertTrue(#rootScope.declaredSymbolIds == 1, "Expected 1 declaration in root scope")
 		assertTrue(#blockScope.declaredSymbolIds == 2, "Expected 2 declarations (including redeclaration) in inner Block scope")
 
@@ -725,11 +723,10 @@ print("diag:", #parsed.diagnostics, "stmts:", #parsed.ast.body.statements, "root
 			"Expected distinct symbol IDs for outer, inner, and redeclared inner symbols"
 		)
 
-print("Expected span: 22, 22")
-print("Actual start:", sym2.span.start.offset, sym2.span.start.line, sym2.span.start.column)
-print("Actual end:", sym2.span["end"].offset, sym2.span["end"].line, sym2.span["end"].column)
-
-		assertTrue(matchesScalarSpan(sym2.span, mkSpan(22, 22)), "Expected inner declaration span to match binding span (22..22)")
+		assertTrue(
+			matchesScalarSpan(sym2.span, captureScalarSpan(mkSpan(22, 22))),
+			"Expected inner declaration span to match binding span (22..22)"
+		)
 		assertTrue(sym1.readCount == 0 and sym1.writeCount == 0, "Expected initial read/write counts to be 0")
 		assertTrue(ScopeAnalysis.resolveName(res, "x", res.rootScopeId) == sym1, "Expected root scope to resolve outer 'x'")
 		assertTrue(ScopeAnalysis.resolveName(res, "x", blockId) == sym3, "Expected inner scope to resolve latest redeclared 'x'")
