@@ -813,13 +813,13 @@ function ScopeAnalysisTests.runAll(): { [string]: boolean }
 		local symX = res.symbols[1]
 		assertTrue(symX ~= nil, "Expected symbol 'x'")
 
-		-- Assignment visits RHS expressions (Read) before target expressions (Write), and LocalDecl bindings are not references.
+		-- Assignment and CompoundAssignment both visit RHS value expressions before target expressions, and LocalDecl bindings are not references.
 		assertTrue(#res.references == 6, "Expected 6 identifier references in sequence")
 		assertTrue(res.references[1].name == "x" and res.references[1].access == "Read" and res.references[1].resolved == true, "Expected ref #1 (RHS x) to be Read")
 		assertTrue(res.references[2].name == "ext1" and res.references[2].access == "Read" and res.references[2].resolved == false and res.references[2].symbolId == nil, "Expected ref #2 'ext1' to be unresolved Read")
 		assertTrue(res.references[3].name == "x" and res.references[3].access == "Write" and res.references[3].resolved == true, "Expected ref #3 (LHS x) to be Write")
-		assertTrue(res.references[4].name == "x" and res.references[4].access == "ReadWrite" and res.references[4].resolved == true, "Expected ref #4 to be ReadWrite")
-		assertTrue(res.references[5].name == "ext2" and res.references[5].access == "Read" and res.references[5].resolved == false and res.references[5].symbolId == nil, "Expected ref #5 'ext2' to be unresolved Read")
+		assertTrue(res.references[4].name == "ext2" and res.references[4].access == "Read" and res.references[4].resolved == false and res.references[4].symbolId == nil, "Expected ref #4 'ext2' to be unresolved Read")
+		assertTrue(res.references[5].name == "x" and res.references[5].access == "ReadWrite" and res.references[5].resolved == true, "Expected ref #5 (compound target x) to be ReadWrite")
 		assertTrue(res.references[6].name == "x" and res.references[6].access == "Read" and res.references[6].resolved == true, "Expected ref #6 to be Read")
 
 		assertTrue(symX.readCount == 3, string.format("Expected symX.readCount == 3, got %d", symX.readCount))
