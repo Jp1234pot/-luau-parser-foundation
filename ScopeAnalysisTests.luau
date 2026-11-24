@@ -863,18 +863,19 @@ function ScopeAnalysisTests.runAll(): { [string]: boolean }
 		assertTrue(flagSym ~= nil and flagSym.scopeId == rootScope.id, "Expected 'flag' declared in root scope")
 		assertTrue(innerFlagSym ~= nil and innerFlagSym.scopeId == repeatScope.id, "Expected 'innerFlag' declared in Repeat scope")
 
+		-- Assignment visits RHS value ('innerFlag') before target ('flag').
 		assertTrue(#res.references == 4, "Expected 4 references across while and repeat constructs")
 		assertTrue(
 			res.references[1].scopeId == rootScope.id and res.references[1].symbolId == flagSym.id,
 			"Expected while condition 'flag' to be analyzed in parent scope"
 		)
 		assertTrue(
-			res.references[2].scopeId == repeatScope.id and res.references[2].symbolId == flagSym.id and res.references[2].access == "Write",
-			"Expected 'flag' write inside repeat body to resolve outer 'flag'"
+			res.references[2].scopeId == repeatScope.id and res.references[2].symbolId == innerFlagSym.id and res.references[2].access == "Read",
+			"Expected 'innerFlag' RHS read inside repeat body to resolve repeat-scoped 'innerFlag'"
 		)
 		assertTrue(
-			res.references[3].scopeId == repeatScope.id and res.references[3].symbolId == innerFlagSym.id and res.references[3].access == "Read",
-			"Expected 'innerFlag' read inside repeat body to resolve repeat-scoped 'innerFlag'"
+			res.references[3].scopeId == repeatScope.id and res.references[3].symbolId == flagSym.id and res.references[3].access == "Write",
+			"Expected 'flag' write inside repeat body to resolve outer 'flag'"
 		)
 		assertTrue(
 			res.references[4].scopeId == repeatScope.id and res.references[4].symbolId == innerFlagSym.id and res.references[4].access == "Read",
