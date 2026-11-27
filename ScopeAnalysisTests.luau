@@ -44,6 +44,10 @@ type ExprSnapshot = {
 	kind: string,
 	span: ScalarSpan,
 	identName: string?,
+	propNode: Parser.IdentNode?,
+	propKind: string?,
+	propName: string?,
+	propSpan: ScalarSpan?,
 	operator: string?,
 	boolValue: boolean?,
 	numValue: number?,
@@ -209,6 +213,10 @@ local function collectExprSnapshot(expr: Parser.ExprNode, path: string, out: { E
 		kind = expr.kind,
 		span = captureScalarSpan(expr.span),
 		identName = nil,
+		propNode = nil,
+		propKind = nil,
+		propName = nil,
+		propSpan = nil,
 		operator = nil,
 		boolValue = nil,
 		numValue = nil,
@@ -220,6 +228,19 @@ local function collectExprSnapshot(expr: Parser.ExprNode, path: string, out: { E
 
 	if expr.kind == "IdentifierExpr" then
 		snap.identName = expr.name
+	elseif expr.kind == "MemberExpr" then
+		snap.propNode = expr.property
+		snap.propKind = expr.property.kind
+		snap.propName = expr.property.name
+		snap.propSpan = captureScalarSpan(expr.property.span)
+		table.insert(out, snap)
+		collectExprSnapshot(expr.object, path .. ".object", out)
+		return
+	elseif expr.kind == "IndexExpr" then
+		table.insert(out, snap)
+		collectExprSnapshot(expr.base, path .. ".base", out)
+		collectExprSnapshot(expr.index, path .. ".index", out)
+		return
 	elseif expr.kind == "BooleanLiteral" then
 		snap.boolValue = expr.value
 	elseif expr.kind == "NumberLiteral" then
@@ -269,6 +290,18 @@ local function checkExprSnapshot(
 
 	if expr.kind == "IdentifierExpr" then
 		assertTrue(expr.name == snap.identName, string.format("Expected IdentifierExpr name at %s to remain unchanged", path))
+	elseif expr.kind == "MemberExpr" then
+		assertTrue(expr.property == snap.propNode, string.format("Expected MemberExpr.property node identity at %s to remain unchanged", path))
+		assertTrue(expr.property.kind == snap.propKind, string.format("Expected MemberExpr.property kind at %s to remain unchanged", path))
+		assertTrue(expr.property.name == snap.propName, string.format("Expected MemberExpr.property name at %s to remain unchanged", path))
+		assertTrue(
+			snap.propSpan ~= nil and matchesScalarSpan(expr.property.span, snap.propSpan),
+			string.format("Expected MemberExpr.property span at %s to remain unchanged", path)
+		)
+		checkExprSnapshot(expr.object, path .. ".object", snapshots, cursorRef)
+	elseif expr.kind == "IndexExpr" then
+		checkExprSnapshot(expr.base, path .. ".base", snapshots, cursorRef)
+		checkExprSnapshot(expr.index, path .. ".index", snapshots, cursorRef)
 	elseif expr.kind == "BooleanLiteral" then
 		assertTrue(expr.value == snap.boolValue, string.format("Expected BooleanLiteral value at %s to remain unchanged", path))
 	elseif expr.kind == "NumberLiteral" then
@@ -990,6 +1023,230 @@ function ScopeAnalysisTests.runAll(): { [string]: boolean }
 		end
 
 		results["m2_ast_immutability_full_statements"] = true
+	end
+
+	-- Step 1: MemberExpr & IndexExpr AST immutability (including MemberExpr.property identity and scalar span)
+	do
+		local parsed = Parser.parse({
+			tok("Keyword", "local", 1, 5, nil, nil),
+			tok("Identifier", "t", 7, 7, "t", nil),
+			tok("Symbol", "=", 9, 9, nil, nil),
+			tok("Identifier", "extObj", 11, 16, "extObj", nil),
+			tok("Symbol", ".", 17, 17, nil, nil),
+			tok("Identifier", "field", 18, 22, "field", nil),
+			tok("Symbol", "[", 23, 23, nil, nil),
+			tok("Identifier", "idxKey", 24, 29, "idxKey", nil),
+			tok("Symbol", "]", 30, 30, nil, nil),
+			tok("Identifier", "t", 32, 32, "t", nil),
+			tok("Symbol", ".", 33, 33, nil, nil),
+			tok("Identifier", "nestedProp", 34, 43, "nestedProp", nil),
+			tok("Symbol", "[", 44, 44, nil, nil),
+			tok("Identifier", "innerIdx", 45, 52, "innerIdx", nil),
+			tok("Symbol", "]", 53, 53, nil, nil),
+			tok("Symbol", "=", 55, 55, nil, nil),
+			tok("Number", "9", 57, 57, 9, nil),
+			tok("Identifier", "t", 59, 59, "t", nil),
+			tok("Symbol", ".", 60, 60, nil, nil),
+			tok("Identifier", "nestedProp", 61, 70, "nestedProp", nil),
+			tok("Symbol", "+=", 72, 73, nil, nil),
+			tok("Number", "1", 75, 75, 1, nil),
+			eof(76),
+		})
+		assertTrue(#parsed.diagnostics == 0, "Expected zero parser diagnostics in Step 1 immutability fixture")
+
+		local ast = parsed.ast
+		local origBody = ast.body
+		local snaps: AstSnapshots = {
+			statements = {},
+			bindings = {},
+			expressions = {},
+			arrays = {},
+		}
+		collectBlockSnapshots(origBody, "body.statements", snaps)
+
+		local _res = ScopeAnalysis.analyze(ast)
+
+		local stmtCursor = { index = 0 }
+		local bindCursor = { index = 0 }
+		local exprCursor = { index = 0 }
+		local arrCursor = { index = 0 }
+		verifyBlockSnapshots(origBody, "body.statements", snaps, stmtCursor, bindCursor, exprCursor, arrCursor)
+		assertTrue(stmtCursor.index == #snaps.statements, "Expected all Step 1 statement snapshots verified")
+		assertTrue(bindCursor.index == #snaps.bindings, "Expected all Step 1 binding snapshots verified")
+		assertTrue(exprCursor.index == #snaps.expressions, "Expected all Step 1 expression snapshots verified")
+		assertTrue(arrCursor.index == #snaps.arrays, "Expected all Step 1 array snapshots verified")
+
+		-- Statement 1 (`local t = extObj.field[idxKey]`) expressions in snaps.expressions:
+		--   [1] body.statements[1].values[1] (IndexExpr)
+		--   [2] body.statements[1].values[1].base (MemberExpr: extObj.field)
+		--   [3] body.statements[1].values[1].base.object (IdentifierExpr: extObj)
+		--   [4] body.statements[1].values[1].index (IdentifierExpr: idxKey)
+		-- Statement 2 (`t.nestedProp[innerIdx] = 9`) expressions start at [5]:
+		--   [5] body.statements[2].targets[1] (IndexExpr: t.nestedProp[innerIdx])
+		--   [6] body.statements[2].targets[1].base (MemberExpr: t.nestedProp)
+		--   [7] body.statements[2].targets[1].base.object (IdentifierExpr: t)
+		--   [8] body.statements[2].targets[1].index (IdentifierExpr: innerIdx)
+		local assignStmt = origBody.statements[2] :: any
+		local targetIndexExpr = assignStmt.targets[1] :: any
+		local memberNode = targetIndexExpr.base :: any
+		assertTrue(memberNode.kind == "MemberExpr", "Expected target base to be MemberExpr")
+		assertTrue(
+			snaps.expressions[5].path == "body.statements[2].targets[1]"
+				and snaps.expressions[6].path == "body.statements[2].targets[1].base"
+				and snaps.expressions[7].path == "body.statements[2].targets[1].base.object"
+				and snaps.expressions[8].path == "body.statements[2].targets[1].index",
+			"Expected snaps.expressions[5..8] to match body.statements[2].targets[1] subtree"
+		)
+
+		local targetSlice: { ExprSnapshot } = {
+			snaps.expressions[5],
+			snaps.expressions[6],
+			snaps.expressions[7],
+			snaps.expressions[8],
+		}
+		local origPropNode = memberNode.property
+		local origPropSpan = captureScalarSpan(origPropNode.span)
+
+		memberNode.property = {
+			kind = "Identifier",
+			name = origPropNode.name,
+			span = mkSpan(origPropNode.span.start.offset, origPropNode.span["end"].offset),
+		}
+		local caughtIdentityChange = false
+		do
+			local ok = pcall(function()
+				local c = { index = 0 }
+				checkExprSnapshot(targetIndexExpr, "body.statements[2].targets[1]", targetSlice, c)
+				assertTrue(c.index == #targetSlice, "Expected all targetSlice snapshots to be consumed")
+			end)
+			caughtIdentityChange = not ok
+		end
+		assertTrue(caughtIdentityChange, "Expected checkExprSnapshot to detect MemberExpr.property node identity replacement")
+		memberNode.property = origPropNode
+
+		origPropNode.span.start.column += 1
+		local caughtSpanChange = false
+		do
+			local ok = pcall(function()
+				local c = { index = 0 }
+				checkExprSnapshot(targetIndexExpr, "body.statements[2].targets[1]", targetSlice, c)
+				assertTrue(c.index == #targetSlice, "Expected all targetSlice snapshots to be consumed")
+			end)
+			caughtSpanChange = not ok
+		end
+		assertTrue(caughtSpanChange, "Expected checkExprSnapshot to detect MemberExpr.property scalar span mutation")
+		origPropNode.span.start.column = origPropSpan.startCol
+
+		results["m3_step1_member_and_index_ast_immutability"] = true
+	end
+
+	-- Step 1: Exact reference ordering, access kinds, resolution, symbol IDs, read/write counts,
+	-- non-registration of member properties, and nested member/index + compound assignment targets
+	do
+		local parsed = Parser.parse({
+			tok("Keyword", "local", 1, 5, nil, nil),
+			tok("Identifier", "obj", 7, 9, "obj", nil),
+			tok("Symbol", "=", 11, 11, nil, nil),
+			tok("Number", "0", 13, 13, 0, nil),
+			tok("Keyword", "local", 15, 19, nil, nil),
+			tok("Identifier", "k", 21, 21, "k", nil),
+			tok("Symbol", "=", 23, 23, nil, nil),
+			tok("Number", "1", 25, 25, 1, nil),
+			-- Stmt 3: obj.prop = k  => RHS reads k; target MemberExpr reads obj
+			tok("Identifier", "obj", 27, 29, "obj", nil),
+			tok("Symbol", ".", 30, 30, nil, nil),
+			tok("Identifier", "prop", 31, 34, "prop", nil),
+			tok("Symbol", "=", 36, 36, nil, nil),
+			tok("Identifier", "k", 38, 38, "k", nil),
+			-- Stmt 4: obj.sub[k].leaf = unresBase.field[unresKey]
+			-- RHS visits unresBase (Read), unresKey (Read); target visits obj (Read), k (Read)
+			tok("Identifier", "obj", 40, 42, "obj", nil),
+			tok("Symbol", ".", 43, 43, nil, nil),
+			tok("Identifier", "sub", 44, 46, "sub", nil),
+			tok("Symbol", "[", 47, 47, nil, nil),
+			tok("Identifier", "k", 48, 48, "k", nil),
+			tok("Symbol", "]", 49, 49, nil, nil),
+			tok("Symbol", ".", 50, 50, nil, nil),
+			tok("Identifier", "leaf", 51, 54, "leaf", nil),
+			tok("Symbol", "=", 56, 56, nil, nil),
+			tok("Identifier", "unresBase", 58, 66, "unresBase", nil),
+			tok("Symbol", ".", 67, 67, nil, nil),
+			tok("Identifier", "field", 68, 72, "field", nil),
+			tok("Symbol", "[", 73, 73, nil, nil),
+			tok("Identifier", "unresKey", 74, 81, "unresKey", nil),
+			tok("Symbol", "]", 82, 82, nil, nil),
+			-- Stmt 5: obj.sub[k] += k  => RHS reads k; target IndexExpr reads obj (Read), k (Read)
+			tok("Identifier", "obj", 84, 86, "obj", nil),
+			tok("Symbol", ".", 87, 87, nil, nil),
+			tok("Identifier", "sub", 88, 90, "sub", nil),
+			tok("Symbol", "[", 91, 91, nil, nil),
+			tok("Identifier", "k", 92, 92, "k", nil),
+			tok("Symbol", "]", 93, 93, nil, nil),
+			tok("Symbol", "+=", 95, 96, nil, nil),
+			tok("Identifier", "k", 98, 98, "k", nil),
+			-- Stmt 6: k += 2  => RHS has no identifier; direct target k receives ReadWrite
+			tok("Identifier", "k", 100, 100, "k", nil),
+			tok("Symbol", "+=", 102, 103, nil, nil),
+			tok("Number", "2", 105, 105, 2, nil),
+			eof(106),
+		})
+		assertTrue(#parsed.diagnostics == 0, "Expected zero parser diagnostics in Step 1 scope precision test")
+
+		local res = ScopeAnalysis.analyze(parsed.ast)
+		local rootScope = res.scopes[res.rootScopeId]
+		local symObj = rootScope.symbolsByName["obj"]
+		local symK = rootScope.symbolsByName["k"]
+		assertTrue(symObj ~= nil and symK ~= nil, "Expected symbols 'obj' and 'k' in root scope")
+
+		local forbiddenNames: { [string]: boolean } = {
+			["prop"] = true,
+			["sub"] = true,
+			["leaf"] = true,
+			["field"] = true,
+		}
+		for propName in pairs(forbiddenNames) do
+			assertTrue(rootScope.symbolsByName[propName] == nil, string.format("Expected member property '%s' not to be a symbol", propName))
+		end
+
+		-- Exact reference sequence (10 references):
+		-- [1] k (Read, resolved, symK.id)      from RHS of `obj.prop = k`
+		-- [2] obj (Read, resolved, symObj.id)  from target `obj.prop`
+		-- [3] unresBase (Read, unresolved, nil) from RHS `unresBase.field[unresKey]`
+		-- [4] unresKey (Read, unresolved, nil)  from RHS index `unresKey`
+		-- [5] obj (Read, resolved, symObj.id)  from target `obj.sub[k].leaf`
+		-- [6] k (Read, resolved, symK.id)      from target index `k` in `obj.sub[k].leaf`
+		-- [7] k (Read, resolved, symK.id)      from RHS of `obj.sub[k] += k`
+		-- [8] obj (Read, resolved, symObj.id)  from target `obj.sub[k]`
+		-- [9] k (Read, resolved, symK.id)      from target index `k` in `obj.sub[k]`
+		-- [10] k (ReadWrite, resolved, symK.id) from direct compound target `k += 2`
+		assertTrue(#res.references == 10, string.format("Expected 10 references, got %d", #res.references))
+
+		local expectedRefs: { { name: string, access: ScopeAnalysis.AccessKind, resolved: boolean, symbolId: number? } } = {
+			{ name = "k", access = "Read", resolved = true, symbolId = symK.id },
+			{ name = "obj", access = "Read", resolved = true, symbolId = symObj.id },
+			{ name = "unresBase", access = "Read", resolved = false, symbolId = nil },
+			{ name = "unresKey", access = "Read", resolved = false, symbolId = nil },
+			{ name = "obj", access = "Read", resolved = true, symbolId = symObj.id },
+			{ name = "k", access = "Read", resolved = true, symbolId = symK.id },
+			{ name = "k", access = "Read", resolved = true, symbolId = symK.id },
+			{ name = "obj", access = "Read", resolved = true, symbolId = symObj.id },
+			{ name = "k", access = "Read", resolved = true, symbolId = symK.id },
+			{ name = "k", access = "ReadWrite", resolved = true, symbolId = symK.id },
+		}
+
+		for i, exp in ipairs(expectedRefs) do
+			local actual = res.references[i]
+			assertTrue(not forbiddenNames[actual.name], string.format("Member property '%s' must never appear as a lexical reference", actual.name))
+			assertTrue(actual.name == exp.name, string.format("Ref #%d expected name '%s', got '%s'", i, exp.name, actual.name))
+			assertTrue(actual.access == exp.access, string.format("Ref #%d (%s) expected access '%s', got '%s'", i, exp.name, exp.access, actual.access))
+			assertTrue(actual.resolved == exp.resolved, string.format("Ref #%d (%s) expected resolved=%s", i, exp.name, tostring(exp.resolved)))
+			assertTrue(actual.symbolId == exp.symbolId, string.format("Ref #%d (%s) expected symbolId=%s, got %s", i, exp.name, tostring(exp.symbolId), tostring(actual.symbolId)))
+		end
+
+		assertTrue(symObj.readCount == 3 and symObj.writeCount == 0, string.format("Expected 'obj' counts (3, 0), got (%d, %d)", symObj.readCount, symObj.writeCount))
+		assertTrue(symK.readCount == 4 and symK.writeCount == 1, string.format("Expected 'k' counts (4, 1), got (%d, %d)", symK.readCount, symK.writeCount))
+
+		results["m3_step1_member_and_index_scope_accounting"] = true
 	end
 
 	return results
