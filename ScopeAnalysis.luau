@@ -171,6 +171,13 @@ local function visitExpr(
 ): ()
 	if expr.kind == "IdentifierExpr" then
 		recordIdentifierReference(state, expr.name, access, expr.span, scopeId)
+	elseif expr.kind == "MemberExpr" then
+		-- Visit object as Read; property is a member name, not a lexical reference.
+		visitExpr(state, expr.object, scopeId, "Read")
+	elseif expr.kind == "IndexExpr" then
+		-- Visit base and index as Read.
+		visitExpr(state, expr.base, scopeId, "Read")
+		visitExpr(state, expr.index, scopeId, "Read")
 	elseif expr.kind == "UnaryExpr" then
 		visitExpr(state, expr.operand, scopeId, "Read")
 	elseif expr.kind == "BinaryExpr" then
@@ -178,6 +185,26 @@ local function visitExpr(
 		visitExpr(state, expr.right, scopeId, "Read")
 	elseif expr.kind == "GroupedExpr" then
 		visitExpr(state, expr.inner, scopeId, access)
+	end
+end
+
+local function visitAssignmentTarget(
+	state: AnalyzerState,
+	targetExpr: Parser.ExprNode,
+	scopeId: number,
+	access: AccessKind
+): ()
+	if targetExpr.kind == "IdentifierExpr" then
+		recordIdentifierReference(state, targetExpr.name, access, targetExpr.span, scopeId)
+	elseif targetExpr.kind == "MemberExpr" then
+		-- Member assignment reads the receiver object and does not rebind/write the base identifier.
+		visitExpr(state, targetExpr.object, scopeId, "Read")
+	elseif targetExpr.kind == "IndexExpr" then
+		-- Index assignment reads base and index expressions and does not rebind/write the base identifier.
+		visitExpr(state, targetExpr.base, scopeId, "Read")
+		visitExpr(state, targetExpr.index, scopeId, "Read")
+	else
+		visitExpr(state, targetExpr, scopeId, access)
 	end
 end
 
@@ -222,11 +249,11 @@ local function visitBlock(state: AnalyzerState, block: Parser.BlockNode, scopeId
 				visitExpr(state, valExpr, scopeId, "Read")
 			end
 			for _, targetExpr in ipairs(stmt.targets) do
-				visitExpr(state, targetExpr, scopeId, "Write")
+				visitAssignmentTarget(state, targetExpr, scopeId, "Write")
 			end
 		elseif stmt.kind == "CompoundAssignment" then
 			visitExpr(state, stmt.value, scopeId, "Read")
-			visitExpr(state, stmt.target, scopeId, "ReadWrite")
+			visitAssignmentTarget(state, stmt.target, scopeId, "ReadWrite")
 		elseif stmt.kind == "ReturnStmt" then
 			for _, valExpr in ipairs(stmt.values) do
 				visitExpr(state, valExpr, scopeId, "Read")
