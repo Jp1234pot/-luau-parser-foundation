@@ -1244,7 +1244,7 @@ function ScopeAnalysisTests.runAll(): { [string]: boolean }
 		end
 
 		assertTrue(symObj.readCount == 3 and symObj.writeCount == 0, string.format("Expected 'obj' counts (3, 0), got (%d, %d)", symObj.readCount, symObj.writeCount))
-		assertTrue(symK.readCount == 4 and symK.writeCount == 1, string.format("Expected 'k' counts (4, 1), got (%d, %d)", symK.readCount, symK.writeCount))
+		assertTrue(symK.readCount == 5 and symK.writeCount == 1, string.format("Expected 'k' counts (5, 1), got (%d, %d)", symK.readCount, symK.writeCount))
 
 		results["m3_step1_member_and_index_scope_accounting"] = true
 	end
