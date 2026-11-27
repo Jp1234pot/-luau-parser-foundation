@@ -152,7 +152,7 @@ function ParserTests.runAll(): { [string]: boolean }
 		results["precedence_and_associativity_local_decl_ast"] = true
 	end
 
-	-- 2. Assignment target validation
+	-- 2. Assignment target validation & Step 1 MemberExpr / IndexExpr postfix parsing
 	do
 		local rMulti = Parser.parse({
 			tok("Identifier", "a", 1, 1, "a", nil),
@@ -201,6 +201,241 @@ function ParserTests.runAll(): { [string]: boolean }
 			eof(7),
 		})
 		assertTrue(#rBadCompound.diagnostics >= 1, "Expected diagnostic for invalid compound target '1 += 2'")
+
+		-- Step 1: Explicit valid assignment targets: arr[i] = 2, t.x += 3, arr[i] *= 4
+		local rArrAssign = Parser.parse({
+			tok("Identifier", "arr", 1, 3, "arr", nil),
+			tok("Symbol", "[", 4, 4, nil, nil),
+			tok("Identifier", "i", 5, 5, "i", nil),
+			tok("Symbol", "]", 6, 6, nil, nil),
+			tok("Symbol", "=", 8, 8, nil, nil),
+			tok("Number", "2", 10, 10, 2, nil),
+			eof(11),
+		})
+		local arrAssignStmt = rArrAssign.ast.body.statements[1] :: any
+		assertTrue(
+			#rArrAssign.diagnostics == 0
+				and arrAssignStmt.kind == "Assignment"
+				and #arrAssignStmt.targets == 1
+				and arrAssignStmt.targets[1].kind == "IndexExpr"
+				and arrAssignStmt.targets[1].base.kind == "IdentifierExpr"
+				and arrAssignStmt.targets[1].base.name == "arr"
+				and arrAssignStmt.targets[1].index.kind == "IdentifierExpr"
+				and arrAssignStmt.targets[1].index.name == "i"
+				and #arrAssignStmt.values == 1
+				and arrAssignStmt.values[1].kind == "NumberLiteral"
+				and arrAssignStmt.values[1].value == 2,
+			"Expected valid IndexExpr assignment arr[i] = 2 with 0 diagnostics"
+		)
+
+		local rMemberPlusAssign = Parser.parse({
+			tok("Identifier", "t", 1, 1, "t", nil),
+			tok("Symbol", ".", 2, 2, nil, nil),
+			tok("Identifier", "x", 3, 3, "x", nil),
+			tok("Symbol", "+=", 5, 6, nil, nil),
+			tok("Number", "3", 8, 8, 3, nil),
+			eof(9),
+		})
+		local memberPlusStmt = rMemberPlusAssign.ast.body.statements[1] :: any
+		assertTrue(
+			#rMemberPlusAssign.diagnostics == 0
+				and memberPlusStmt.kind == "CompoundAssignment"
+				and memberPlusStmt.operator == "+="
+				and memberPlusStmt.target.kind == "MemberExpr"
+				and memberPlusStmt.target.object.kind == "IdentifierExpr"
+				and memberPlusStmt.target.object.name == "t"
+				and memberPlusStmt.target.property.kind == "Identifier"
+				and memberPlusStmt.target.property.name == "x"
+				and memberPlusStmt.value.kind == "NumberLiteral"
+				and memberPlusStmt.value.value == 3,
+			"Expected valid MemberExpr compound assignment t.x += 3 with 0 diagnostics"
+		)
+
+		local rArrMulAssign = Parser.parse({
+			tok("Identifier", "arr", 1, 3, "arr", nil),
+			tok("Symbol", "[", 4, 4, nil, nil),
+			tok("Identifier", "i", 5, 5, "i", nil),
+			tok("Symbol", "]", 6, 6, nil, nil),
+			tok("Symbol", "*=", 8, 9, nil, nil),
+			tok("Number", "4", 11, 11, 4, nil),
+			eof(12),
+		})
+		local arrMulStmt = rArrMulAssign.ast.body.statements[1] :: any
+		assertTrue(
+			#rArrMulAssign.diagnostics == 0
+				and arrMulStmt.kind == "CompoundAssignment"
+				and arrMulStmt.operator == "*="
+				and arrMulStmt.target.kind == "IndexExpr"
+				and arrMulStmt.target.base.kind == "IdentifierExpr"
+				and arrMulStmt.target.base.name == "arr"
+				and arrMulStmt.target.index.kind == "IdentifierExpr"
+				and arrMulStmt.target.index.name == "i"
+				and arrMulStmt.value.kind == "NumberLiteral"
+				and arrMulStmt.value.value == 4,
+			"Expected valid IndexExpr compound assignment arr[i] *= 4 with 0 diagnostics"
+		)
+
+		-- Step 1: MemberExpr & IndexExpr chains and assignment targets: a.b.c = 1, local y = a[b].c[d], local z = a[b[c]]
+		local rMemberChain = Parser.parse({
+			tok("Identifier", "a", 1, 1, "a", nil),
+			tok("Symbol", ".", 2, 2, nil, nil),
+			tok("Identifier", "b", 3, 3, "b", nil),
+			tok("Symbol", ".", 4, 4, nil, nil),
+			tok("Identifier", "c", 5, 5, "c", nil),
+			tok("Symbol", "=", 7, 7, nil, nil),
+			tok("Number", "1", 9, 9, 1, nil),
+			eof(10),
+		})
+		local mcStmt = rMemberChain.ast.body.statements[1] :: any
+		assertTrue(
+			#rMemberChain.diagnostics == 0
+				and mcStmt.kind == "Assignment"
+				and mcStmt.targets[1].kind == "MemberExpr"
+				and mcStmt.targets[1].property.name == "c"
+				and mcStmt.targets[1].object.kind == "MemberExpr"
+				and mcStmt.targets[1].object.property.name == "b"
+				and mcStmt.targets[1].object.object.kind == "IdentifierExpr",
+			"Expected chained MemberExpr assignment target a.b.c = 1"
+		)
+
+		local rMixedChain = Parser.parse({
+			tok("Keyword", "local", 1, 5, nil, nil),
+			tok("Identifier", "y", 7, 7, "y", nil),
+			tok("Symbol", "=", 9, 9, nil, nil),
+			tok("Identifier", "a", 11, 11, "a", nil),
+			tok("Symbol", "[", 12, 12, nil, nil),
+			tok("Identifier", "b", 13, 13, "b", nil),
+			tok("Symbol", "]", 14, 14, nil, nil),
+			tok("Symbol", ".", 15, 15, nil, nil),
+			tok("Identifier", "c", 16, 16, "c", nil),
+			tok("Symbol", "[", 17, 17, nil, nil),
+			tok("Identifier", "d", 18, 18, "d", nil),
+			tok("Symbol", "]", 19, 19, nil, nil),
+			eof(20),
+		})
+		local mixedInit = (rMixedChain.ast.body.statements[1] :: any).values[1]
+		assertTrue(
+			#rMixedChain.diagnostics == 0
+				and mixedInit.kind == "IndexExpr"
+				and mixedInit.base.kind == "MemberExpr",
+			"Expected mixed index/member postfix chain a[b].c[d]"
+		)
+
+		local rNestedIdx = Parser.parse({
+			tok("Keyword", "local", 1, 5, nil, nil),
+			tok("Identifier", "z", 7, 7, "z", nil),
+			tok("Symbol", "=", 9, 9, nil, nil),
+			tok("Identifier", "a", 11, 11, "a", nil),
+			tok("Symbol", "[", 12, 12, nil, nil),
+			tok("Identifier", "b", 13, 13, "b", nil),
+			tok("Symbol", "[", 14, 14, nil, nil),
+			tok("Identifier", "c", 15, 15, "c", nil),
+			tok("Symbol", "]", 16, 16, nil, nil),
+			tok("Symbol", "]", 17, 17, nil, nil),
+			eof(18),
+		})
+		local nestedIdxInit = (rNestedIdx.ast.body.statements[1] :: any).values[1]
+		assertTrue(
+			#rNestedIdx.diagnostics == 0
+				and nestedIdxInit.kind == "IndexExpr"
+				and nestedIdxInit.index.kind == "IndexExpr",
+			"Expected nested IndexExpr inside index brackets a[b[c]]"
+		)
+
+		-- Step 1: Bare grouped L-value rejected, while grouped receiver/base in MemberExpr/IndexExpr accepted
+		local rBareGroupedTarget = Parser.parse({
+			tok("Symbol", "(", 1, 1, nil, nil),
+			tok("Identifier", "a", 2, 2, "a", nil),
+			tok("Symbol", ")", 3, 3, nil, nil),
+			tok("Symbol", "=", 5, 5, nil, nil),
+			tok("Number", "1", 7, 7, 1, nil),
+			eof(8),
+		})
+		assertTrue(#rBareGroupedTarget.diagnostics >= 1, "Expected diagnostic for bare grouped L-value '(a) = 1'")
+
+		local rGroupedMemberTarget = Parser.parse({
+			tok("Symbol", "(", 1, 1, nil, nil),
+			tok("Identifier", "a", 2, 2, "a", nil),
+			tok("Symbol", "+", 4, 4, nil, nil),
+			tok("Identifier", "b", 6, 6, "b", nil),
+			tok("Symbol", ")", 7, 7, nil, nil),
+			tok("Symbol", ".", 8, 8, nil, nil),
+			tok("Identifier", "c", 9, 9, "c", nil),
+			tok("Symbol", "=", 11, 11, nil, nil),
+			tok("Identifier", "value", 13, 17, "value", nil),
+			eof(18),
+		})
+		local gmStmt = rGroupedMemberTarget.ast.body.statements[1] :: any
+		assertTrue(
+			#rGroupedMemberTarget.diagnostics == 0
+				and gmStmt.kind == "Assignment"
+				and gmStmt.targets[1].kind == "MemberExpr"
+				and gmStmt.targets[1].object.kind == "GroupedExpr",
+			"Expected '(a + b).c = value' to parse with GroupedExpr object"
+		)
+
+		local rGroupedIndexTarget = Parser.parse({
+			tok("Symbol", "(", 1, 1, nil, nil),
+			tok("Identifier", "a", 2, 2, "a", nil),
+			tok("Symbol", ".", 3, 3, nil, nil),
+			tok("Identifier", "b", 4, 4, "b", nil),
+			tok("Symbol", ")", 5, 5, nil, nil),
+			tok("Symbol", "[", 6, 6, nil, nil),
+			tok("Identifier", "c", 7, 7, "c", nil),
+			tok("Symbol", "]", 8, 8, nil, nil),
+			tok("Symbol", "=", 10, 10, nil, nil),
+			tok("Identifier", "value", 12, 16, "value", nil),
+			eof(17),
+		})
+		local giStmt = rGroupedIndexTarget.ast.body.statements[1] :: any
+		assertTrue(
+			#rGroupedIndexTarget.diagnostics == 0
+				and giStmt.kind == "Assignment"
+				and giStmt.targets[1].kind == "IndexExpr"
+				and giStmt.targets[1].base.kind == "GroupedExpr",
+			"Expected '(a.b)[c] = value' to parse with GroupedExpr base"
+		)
+
+		-- Step 1: Malformed postfix recovery (missing property after '.', missing ']') without consuming enclosing ')'
+		local rMissingPropInParen = Parser.parse({
+			tok("Keyword", "local", 1, 5, nil, nil),
+			tok("Identifier", "x", 7, 7, "x", nil),
+			tok("Symbol", "=", 9, 9, nil, nil),
+			tok("Symbol", "(", 11, 11, nil, nil),
+			tok("Identifier", "a", 12, 12, "a", nil),
+			tok("Symbol", ".", 13, 13, nil, nil),
+			tok("Symbol", ")", 14, 14, nil, nil),
+			eof(15),
+		})
+		local mpGrouped = ((rMissingPropInParen.ast.body.statements[1] :: any).values[1]) :: any
+		assertTrue(
+			#rMissingPropInParen.diagnostics >= 1
+				and mpGrouped.kind == "GroupedExpr"
+				and mpGrouped.inner.kind == "MemberExpr"
+				and mpGrouped.inner.object.kind == "IdentifierExpr",
+			"Expected missing property after '.' to emit diagnostic, preserve MemberExpr object, and not consume ')'"
+		)
+
+		local rMissingRBracketInParen = Parser.parse({
+			tok("Keyword", "local", 1, 5, nil, nil),
+			tok("Identifier", "x", 7, 7, "x", nil),
+			tok("Symbol", "=", 9, 9, nil, nil),
+			tok("Symbol", "(", 11, 11, nil, nil),
+			tok("Identifier", "a", 12, 12, "a", nil),
+			tok("Symbol", "[", 13, 13, nil, nil),
+			tok("Identifier", "i", 14, 14, "i", nil),
+			tok("Symbol", ")", 15, 15, nil, nil),
+			eof(16),
+		})
+		local mrGrouped = ((rMissingRBracketInParen.ast.body.statements[1] :: any).values[1]) :: any
+		assertTrue(
+			#rMissingRBracketInParen.diagnostics >= 1
+				and mrGrouped.kind == "GroupedExpr"
+				and mrGrouped.inner.kind == "IndexExpr"
+				and mrGrouped.inner.base.kind == "IdentifierExpr"
+				and mrGrouped.inner.index.kind == "IdentifierExpr",
+			"Expected missing ']' to emit diagnostic, preserve partial IndexExpr, and not consume ')'"
+		)
 
 		results["assignment_target_validation"] = true
 	end
