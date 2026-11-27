@@ -240,13 +240,13 @@ local function addDiagnostic(
 	message: string,
 	span: Span
 ): ()
-	table.insert(diagnostics, {
+	table.insert(diagnostics, ({
 		code = code,
 		severity = severity,
 		stage = "Parser",
 		message = message,
 		span = span,
-	})
+	}) :: Diagnostic)
 end
 
 function Parser.parse(
@@ -255,7 +255,7 @@ function Parser.parse(
 	diagnosticsSink: { Diagnostic }?,
 	trivia: { Trivia }?
 ): ParseResult
-	local diagnostics: { Diagnostic } = diagnosticsSink or {}
+	local diagnostics: { Diagnostic } = diagnosticsSink or ({} :: { Diagnostic })
 	local maxDepth = if config and config.maxDepth then math.max(1, config.maxDepth) else 128
 
 	local fallbackSpan: Span = DEFAULT_EOF_SPAN
