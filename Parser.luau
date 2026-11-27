@@ -121,6 +121,8 @@ export type ExprNode =
 	| { kind: "StringLiteral", value: string?, raw: string, delimiter: StringDelimiter, span: Span }
 	| { kind: "VarargLiteral", span: Span }
 	| { kind: "IdentifierExpr", name: string, span: Span }
+	| { kind: "MemberExpr", object: ExprNode, property: IdentNode, span: Span }
+	| { kind: "IndexExpr", base: ExprNode, index: ExprNode, span: Span }
 	| { kind: "UnaryExpr", operator: "not" | "#" | "-", operand: ExprNode, span: Span }
 	| { kind: "BinaryExpr", operator: string, left: ExprNode, right: ExprNode, span: Span }
 	| { kind: "GroupedExpr", inner: ExprNode, span: Span }
@@ -373,14 +375,17 @@ function Parser.parse(
 	end
 
 	local function validateAssignmentTarget(target: ExprNode): boolean
-		if target.kind == "IdentifierExpr" then
+		if target.kind == "IdentifierExpr"
+			or target.kind == "MemberExpr"
+			or target.kind == "IndexExpr"
+		then
 			return true
 		end
 		addDiagnostic(
 			diagnostics,
 			"PAR008",
 			"Error",
-			string.format("Invalid assignment target of kind '%s'; expected identifier.", target.kind),
+			string.format("Invalid assignment target of kind '%s'; expected identifier, member, or index expression.", target.kind),
 			target.span
 		)
 		return false
@@ -485,6 +490,7 @@ function Parser.parse(
 	local parsePrecMultiplicative: () -> ExprNode
 	local parsePrecUnary: () -> ExprNode
 	local parsePrecExponent: () -> ExprNode
+	local parsePostfix: (base: ExprNode) -> ExprNode
 	local parsePrimary: () -> ExprNode
 
 	-- Type annotations
@@ -639,6 +645,20 @@ function Parser.parse(
 		}
 	end
 
+	local function isEnclosingDelimiter(tok: Token): boolean
+		if tok.kind == "Eof" then
+			return true
+		end
+		if tok.kind == "Symbol" then
+			local lex = tok.lexeme
+			return lex == ")" or lex == "]" or lex == "}" or lex == "," or lex == ";"
+		end
+		if tok.kind == "Keyword" then
+			return BLOCK_CLOSERS[tok.lexeme] == true or STATEMENT_STARTERS[tok.lexeme] == true
+		end
+		return false
+	end
+
 	parsePrimary = function(): ExprNode
 		local t = peek(0)
 
@@ -703,8 +723,103 @@ function Parser.parse(
 		return { kind = "ErrorExpr", rawLexemes = { t.lexeme }, span = t.span }
 	end
 
+	parsePostfix = function(base: ExprNode): ExprNode
+		local expr: ExprNode = base
+		while not isAtEnd() do
+			local nextTok = peek(0)
+			if nextTok.kind == "Symbol" and nextTok.lexeme == "." then
+				local dotTok = advance()
+				local propTok = peek(0)
+				if propTok.kind == "Identifier" then
+					advance()
+					local propNode: IdentNode = {
+						kind = "Identifier",
+						name = propTok.lexeme,
+						span = propTok.span,
+					}
+					expr = {
+						kind = "MemberExpr",
+						object = expr,
+						property = propNode,
+						span = mergeSpan(expr.span, propNode.span),
+					}
+				else
+					addDiagnostic(
+						diagnostics,
+						"PAR001",
+						"Error",
+						string.format("Expected property identifier after '.', got '%s'.", propTok.lexeme),
+						propTok.span
+					)
+					-- Preserve useful parsed structure (`expr` as object) without consuming enclosing delimiters.
+					local syntheticProp: IdentNode = {
+						kind = "Identifier",
+						name = "",
+						span = if isEnclosingDelimiter(propTok) then dotTok.span else propTok.span,
+					}
+					local endSpan = if isEnclosingDelimiter(propTok) then dotTok.span else propTok.span
+					expr = {
+						kind = "MemberExpr",
+						object = expr,
+						property = syntheticProp,
+						span = mergeSpan(expr.span, endSpan),
+					}
+					break
+				end
+			elseif nextTok.kind == "Symbol" and nextTok.lexeme == "[" then
+				local lbracketTok = advance()
+				if not enterDepth(lbracketTok.span) then
+					local overflowIdx = consumeOverflowOperand(lbracketTok.span)
+					local closeTok = matchSymbol("]")
+					local endSpan = if closeTok then closeTok.span else overflowIdx.span
+					expr = {
+						kind = "IndexExpr",
+						base = expr,
+						index = overflowIdx,
+						span = mergeSpan(expr.span, endSpan),
+					}
+					if not closeTok then
+						break
+					end
+					continue
+				end
+
+				local indexExpr = parseExpression()
+				local closeTok = matchSymbol("]")
+				exitDepth()
+				if not closeTok then
+					addDiagnostic(
+						diagnostics,
+						"PAR001",
+						"Error",
+						"Expected ']' to close index expression.",
+						peek(0).span
+					)
+					-- Preserve partial IndexExpr without consuming enclosing delimiters.
+					expr = {
+						kind = "IndexExpr",
+						base = expr,
+						index = indexExpr,
+						span = mergeSpan(expr.span, indexExpr.span),
+					}
+					break
+				end
+
+				expr = {
+					kind = "IndexExpr",
+					base = expr,
+					index = indexExpr,
+					span = mergeSpan(expr.span, closeTok.span),
+				}
+			else
+				break
+			end
+		end
+		return expr
+	end
+
 	parsePrecExponent = function(): ExprNode
-		local left = parsePrimary()
+		local left = parsePostfix(parsePrimary())
 		if peek(0).kind == "Symbol" and peek(0).lexeme == "^" then
 			local opTok = advance()
 			if not enterDepth(opTok.span) then
@@ -1077,7 +1192,7 @@ function Parser.parse(
 			}, false
 		end
 
-		local firstTarget = parsePrimary()
+		local firstTarget = parsePostfix(parsePrimary())
 		local allTargetsValid = validateAssignmentTarget(firstTarget)
 
 		if peek(0).kind == "Symbol" and COMPOUND_OPS[peek(0).lexeme] then
@@ -1099,7 +1214,7 @@ function Parser.parse(
 
 		local targets: { ExprNode } = { firstTarget }
 		while matchSymbol(",") ~= nil do
-			local nextTarget = parsePrimary()
+			local nextTarget = parsePostfix(parsePrimary())
 			if not validateAssignmentTarget(nextTarget) then
 				allTargetsValid = false
 			end
