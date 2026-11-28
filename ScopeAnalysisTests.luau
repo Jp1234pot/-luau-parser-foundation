@@ -532,6 +532,218 @@ function ScopeAnalysisTests.runAll(): { [string]: boolean }
 		assertTrue(whileScope.kind == "While" and whileScope.parentId == root.id, "Expected While scope owned by WhileStmt")
 		assertTrue(#whileScope.childrenIds == 1, "Expected single Repeat scope inside While body")
 
+		local repeatScope = res.scopes[whileScope.ected BinaryExpr operator at %s to remain unchanged", path))
+		checkExprSnapshot(expr.left, path .. ".left", snapshots, cursorRef)
+		checkExprSnapshot(expr.right, path .. ".right", snapshots, cursorRef)
+	elseif expr.kind == "GroupedExpr" then
+		checkExprSnapshot(expr.inner, path .. ".inner", snapshots, cursorRef)
+	end
+end
+
+local function collectBlockSnapshots(
+	block: Parser.BlockNode,
+	prefix: string,
+	snaps: AstSnapshots
+): ()
+	recordArraySnapshot(snaps.arrays, prefix, block.statements)
+
+	for i, stmt in ipairs(block.statements) do
+		local entryPath = string.format("%s[%d]", prefix, i)
+		table.insert(snaps.statements, {
+			path = entryPath,
+			node = stmt,
+			kind = stmt.kind,
+			span = captureScalarSpan(stmt.span),
+		})
+
+		if stmt.kind == "LocalDecl" then
+			recordArraySnapshot(snaps.arrays, entryPath .. ".bindings", stmt.bindings)
+			recordArraySnapshot(snaps.arrays, entryPath .. ".values", stmt.values)
+			for bIdx, binding in ipairs(stmt.bindings) do
+				table.insert(snaps.bindings, {
+					path = string.format("%s.bindings[%d]", entryPath, bIdx),
+					node = binding,
+					nameNode = binding.name,
+					identName = binding.name.name,
+					span = captureScalarSpan(binding.span),
+					nameSpan = captureScalarSpan(binding.name.span),
+					typeAnnotationNode = binding.typeAnnotation,
+					typeAnnotationSummary = summarizeTypeAnnotation(binding.typeAnnotation),
+				})
+			end
+			for vIdx, valExpr in ipairs(stmt.values) do
+				collectExprSnapshot(valExpr, string.format("%s.values[%d]", entryPath, vIdx), snaps.expressions)
+			end
+		elseif stmt.kind == "Assignment" then
+			recordArraySnapshot(snaps.arrays, entryPath .. ".targets", stmt.targets)
+			recordArraySnapshot(snaps.arrays, entryPath .. ".values", stmt.values)
+			for tIdx, targetExpr in ipairs(stmt.targets) do
+				collectExprSnapshot(targetExpr, string.format("%s.targets[%d]", entryPath, tIdx), snaps.expressions)
+			end
+			for vIdx, valExpr in ipairs(stmt.values) do
+				collectExprSnapshot(valExpr, string.format("%s.values[%d]", entryPath, vIdx), snaps.expressions)
+			end
+		elseif stmt.kind == "CompoundAssignment" then
+			collectExprSnapshot(stmt.target, entryPath .. ".target", snaps.expressions)
+			collectExprSnapshot(stmt.value, entryPath .. ".value", snaps.expressions)
+		elseif stmt.kind == "ReturnStmt" then
+			recordArraySnapshot(snaps.arrays, entryPath .. ".values", stmt.values)
+			for vIdx, valExpr in ipairs(stmt.values) do
+				collectExprSnapshot(valExpr, string.format("%s.values[%d]", entryPath, vIdx), snaps.expressions)
+			end
+		elseif stmt.kind == "DoStmt" then
+			collectBlockSnapshots(stmt.body, entryPath .. ".body", snaps)
+		elseif stmt.kind == "WhileStmt" then
+			collectExprSnapshot(stmt.condition, entryPath .. ".condition", snaps.expressions)
+			collectBlockSnapshots(stmt.body, entryPath .. ".body", snaps)
+		elseif stmt.kind == "RepeatStmt" then
+			collectBlockSnapshots(stmt.body, entryPath .. ".body", snaps)
+			collectExprSnapshot(stmt.condition, entryPath .. ".condition", snaps.expressions)
+		end
+	end
+end
+
+local function verifyBlockSnapshots(
+	block: Parser.BlockNode,
+	prefix: string,
+	snaps: AstSnapshots,
+	stmtCursor: { index: number },
+	bindCursor: { index: number },
+	exprCursor: { index: number },
+	arrCursor: { index: number }
+): ()
+	checkArraySnapshot(block.statements, prefix, snaps.arrays, arrCursor)
+
+	for i, stmt in ipairs(block.statements) do
+		local entryPath = string.format("%s[%d]", prefix, i)
+		stmtCursor.index += 1
+		local snap = snaps.statements[stmtCursor.index]
+		if snap == nil then
+			error(string.format("Missing statement snapshot for %s", entryPath), 2)
+		end
+		assertTrue(snap.path == entryPath, string.format("Expected snapshot path %s, got %s", entryPath, tostring(snap.path)))
+		assertTrue(stmt == snap.node, string.format("Expected statement node reference at %s to remain unchanged", entryPath))
+		assertTrue(stmt.kind == snap.kind, string.format("Expected statement kind at %s to remain unchanged", entryPath))
+		assertTrue(
+			matchesScalarSpan(stmt.span, snap.span),
+			string.format("Expected statement span coordinates at %s to remain unchanged", entryPath)
+		)
+
+		if stmt.kind == "LocalDecl" then
+			checkArraySnapshot(stmt.bindings, entryPath .. ".bindings", snaps.arrays, arrCursor)
+			checkArraySnapshot(stmt.values, entryPath .. ".values", snaps.arrays, arrCursor)
+			for bIdx, binding in ipairs(stmt.bindings) do
+				bindCursor.index += 1
+				local bSnap = snaps.bindings[bindCursor.index]
+				if bSnap == nil then
+					error(string.format("Missing binding snapshot for %s.bindings[%d]", entryPath, bIdx), 2)
+				end
+				local bPath = string.format("%s.bindings[%d]", entryPath, bIdx)
+				assertTrue(bSnap.path == bPath, string.format("Expected binding path %s, got %s", bPath, tostring(bSnap.path)))
+				assertTrue(binding == bSnap.node, string.format("Expected binding node reference at %s to remain unchanged", bPath))
+				assertTrue(binding.name == bSnap.nameNode, string.format("Expected binding.name reference at %s to remain unchanged", bPath))
+				assertTrue(binding.name.name == bSnap.identName, string.format("Expected binding name at %s to remain unchanged", bPath))
+				assertTrue(matchesScalarSpan(binding.span, bSnap.span), string.format("Expected binding span at %s to remain unchanged", bPath))
+				assertTrue(matchesScalarSpan(binding.name.span, bSnap.nameSpan), string.format("Expected binding name span at %s to remain unchanged", bPath))
+				assertTrue(
+					binding.typeAnnotation == bSnap.typeAnnotationNode,
+					string.format("Expected binding.typeAnnotation identity at %s to remain unchanged", bPath)
+				)
+				assertTrue(
+					matchesTypeAnnotationSummary(binding.typeAnnotation, bSnap.typeAnnotationSummary),
+					string.format("Expected binding.typeAnnotation details at %s to remain unchanged", bPath)
+				)
+			end
+			for vIdx, valExpr in ipairs(stmt.values) do
+				checkExprSnapshot(valExpr, string.format("%s.values[%d]", entryPath, vIdx), snaps.expressions, exprCursor)
+			end
+		elseif stmt.kind == "Assignment" then
+			checkArraySnapshot(stmt.targets, entryPath .. ".targets", snaps.arrays, arrCursor)
+			checkArraySnapshot(stmt.values, entryPath .. ".values", snaps.arrays, arrCursor)
+			for tIdx, targetExpr in ipairs(stmt.targets) do
+				checkExprSnapshot(targetExpr, string.format("%s.targets[%d]", entryPath, tIdx), snaps.expressions, exprCursor)
+			end
+			for vIdx, valExpr in ipairs(stmt.values) do
+				checkExprSnapshot(valExpr, string.format("%s.values[%d]", entryPath, vIdx), snaps.expressions, exprCursor)
+			end
+		elseif stmt.kind == "CompoundAssignment" then
+			checkExprSnapshot(stmt.target, entryPath .. ".target", snaps.expressions, exprCursor)
+			checkExprSnapshot(stmt.value, entryPath .. ".value", snaps.expressions, exprCursor)
+		elseif stmt.kind == "ReturnStmt" then
+			checkArraySnapshot(stmt.values, entryPath .. ".values", snaps.arrays, arrCursor)
+			for vIdx, valExpr in ipairs(stmt.values) do
+				checkExprSnapshot(valExpr, string.format("%s.values[%d]", entryPath, vIdx), snaps.expressions, exprCursor)
+			end
+		elseif stmt.kind == "DoStmt" then
+			verifyBlockSnapshots(stmt.body, entryPath .. ".body", snaps, stmtCursor, bindCursor, exprCursor, arrCursor)
+		elseif stmt.kind == "WhileStmt" then
+			checkExprSnapshot(stmt.condition, entryPath .. ".condition", snaps.expressions, exprCursor)
+			verifyBlockSnapshots(stmt.body, entryPath .. ".body", snaps, stmtCursor, bindCursor, exprCursor, arrCursor)
+		elseif stmt.kind == "RepeatStmt" then
+			verifyBlockSnapshots(stmt.body, entryPath .. ".body", snaps, stmtCursor, bindCursor, exprCursor, arrCursor)
+			checkExprSnapshot(stmt.condition, entryPath .. ".condition", snaps.expressions, exprCursor)
+		end
+	end
+end
+
+function ScopeAnalysisTests.runAll(): { [string]: boolean }
+	local results: { [string]: boolean } = {}
+
+	do
+		local parsed = Parser.parse({
+			tok("Keyword", "do", 1, 2, nil, nil),
+			tok("Keyword", "do", 4, 5, nil, nil),
+			tok("Keyword", "end", 7, 9, nil, nil),
+			tok("Keyword", "end", 11, 13, nil, nil),
+			eof(14),
+		})
+
+		local res = ScopeAnalysis.analyze(parsed.ast)
+		local root = res.scopes[res.rootScopeId]
+		assertTrue(root ~= nil and root.kind == "Chunk" and root.parentId == nil, "Expected root Chunk scope")
+		assertTrue(#root.childrenIds == 1, "Expected 1 child scope under root Chunk")
+
+		local outerBlockId = root.childrenIds[1]
+		local outerBlock = res.scopes[outerBlockId]
+		assertTrue(outerBlock ~= nil and outerBlock.kind == "Block" and outerBlock.parentId == root.id, "Expected outer Block child")
+		assertTrue(#outerBlock.childrenIds == 1, "Expected 1 nested Block child")
+
+		local innerBlockId = outerBlock.childrenIds[1]
+		local innerBlock = res.scopes[innerBlockId]
+		assertTrue(innerBlock ~= nil and innerBlock.kind == "Block" and innerBlock.parentId == outerBlock.id, "Expected inner Block child")
+
+		local chain = ScopeAnalysis.getScopeChain(res, innerBlock.id)
+		assertTrue(
+			#chain == 3
+				and chain[1].id == innerBlock.id
+				and chain[2].id == outerBlock.id
+				and chain[3].id == root.id,
+			"Expected getScopeChain from starting inner scope upward to root"
+		)
+
+		results["root_chunk_and_block_hierarchy"] = true
+	end
+
+	do
+		local parsed = Parser.parse({
+			tok("Keyword", "while", 1, 5, nil, nil),
+			tok("Keyword", "true", 7, 10, true, nil),
+			tok("Keyword", "do", 12, 13, nil, nil),
+			tok("Keyword", "repeat", 15, 20, nil, nil),
+			tok("Keyword", "until", 22, 26, nil, nil),
+			tok("Keyword", "false", 28, 32, false, nil),
+			tok("Keyword", "end", 34, 36, nil, nil),
+			eof(37),
+		})
+
+		local res = ScopeAnalysis.analyze(parsed.ast)
+		local root = res.scopes[res.rootScopeId]
+		assertTrue(#root.childrenIds == 1, "Expected single While scope under root")
+
+		local whileScope = res.scopes[root.childrenIds[1]]
+		assertTrue(whileScope.kind == "While" and whileScope.parentId == root.id, "Expected While scope owned by WhileStmt")
+		assertTrue(#whileScope.childrenIds == 1, "Expected single Repeat scope inside While body")
+
 		local repeatScope = res.scopes[whileScope.childrenIds[1]]
 		assertTrue(repeatScope.kind == "Repeat" and repeatScope.parentId == whileScope.id, "Expected Repeat scope owned by RepeatStmt")
 
